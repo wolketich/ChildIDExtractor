@@ -3,7 +3,7 @@
 """
 Child Info Extractor - Extract child IDs and names from ChildPaths HTML
 
-Extracts child information from HTML snippets and exports to CSV or Excel.
+Extracts child information from HTML files and exports to CSV or Excel.
 
 Author: wolketich
 Last updated: 2025-04-29
@@ -14,6 +14,7 @@ import logging
 import sys
 import csv
 import os
+import argparse
 from datetime import datetime
 from typing import List, Dict, Optional, Union
 from bs4 import BeautifulSoup
@@ -26,10 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger('child_extractor')
 
 class ChildInfoExtractor:
-    """Extract child information from ChildPaths HTML snippets."""
+    """Extract child information from ChildPaths HTML."""
     
     def __init__(self, debug: bool = False):
-        self.html_content = ""
         self.debug = debug
         self.child_id_pattern = re.compile(r'/child/([^/]+)')
         self.all_children = []
@@ -68,24 +68,69 @@ class ChildInfoExtractor:
             
         return "Unknown"
     
-    def extract(self, html_content: str) -> List[Dict[str, str]]:
+    def process_file(self, file_path: str) -> List[Dict[str, str]]:
+        """
+        Read and process HTML from a file
+        
+        Args:
+            file_path: Path to the HTML file
+            
+        Returns:
+            List of extracted child information dictionaries
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+                logger.info(f"Successfully read file: {file_path} ({len(html_content)} bytes)")
+                return self.extract_from_html(html_content, source=os.path.basename(file_path))
+        except Exception as e:
+            logger.error(f"Failed to process file {file_path}: {e}")
+            return []
+    
+    def process_directory(self, dir_path: str, extension: str = '.html') -> List[Dict[str, str]]:
+        """
+        Process all HTML files in a directory
+        
+        Args:
+            dir_path: Path to directory containing HTML files
+            extension: File extension to filter for
+            
+        Returns:
+            List of all extracted child information
+        """
+        results = []
+        try:
+            files = [f for f in os.listdir(dir_path) if f.endswith(extension)]
+            logger.info(f"Found {len(files)} {extension} files in {dir_path}")
+            
+            for file in files:
+                file_path = os.path.join(dir_path, file)
+                file_results = self.process_file(file_path)
+                results.extend(file_results)
+                logger.info(f"Extracted {len(file_results)} children from {file}")
+            
+            return results
+        except Exception as e:
+            logger.error(f"Failed to process directory {dir_path}: {e}")
+            return []
+    
+    def extract_from_html(self, html_content: str, source: str = "unknown") -> List[Dict[str, str]]:
         """
         Parse HTML and extract all child information.
         
         Args:
             html_content: HTML string to parse
+            source: Source identifier for tracking
             
         Returns:
-            List of dictionaries with child information (id and name)
+            List of dictionaries with child information
         """
-        self.html_content = html_content
-        
-        if not self.html_content:
-            logger.warning("No HTML content provided to extract")
+        if not html_content:
+            logger.warning("Empty HTML content provided")
             return []
             
         try:
-            soup = BeautifulSoup(self.html_content, 'html.parser')
+            soup = BeautifulSoup(html_content, 'html.parser')
         except Exception as e:
             logger.error(f"Failed to parse HTML: {e}")
             return []
@@ -120,21 +165,25 @@ class ChildInfoExtractor:
                         if all_text:
                             child_name = all_text
                 
-                children.append({
+                child_info = {
                     'id': child_id,
                     'name': child_name,
+                    'source': source,
                     'extraction_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                })
+                }
+                
+                # Check if this child is already in our list (avoid duplicates)
+                if not any(c['id'] == child_id for c in self.all_children):
+                    children.append(child_info)
+                    self.all_children.append(child_info)
                 
             except Exception as e:
                 logger.error(f"Error processing child #{idx+1}: {e}")
                 continue
         
         if not children:
-            logger.warning("No children information extracted from the provided HTML")
+            logger.warning(f"No children extracted from source: {source}")
             
-        # Add to our cumulative collection of children
-        self.all_children.extend(children)
         return children
     
     def export_to_csv(self, filename: str = None) -> str:
@@ -157,7 +206,7 @@ class ChildInfoExtractor:
             
         try:
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = ['id', 'name', 'extraction_time']
+                fieldnames = ['id', 'name', 'source', 'extraction_time']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 
                 writer.writeheader()
@@ -209,60 +258,137 @@ class ChildInfoExtractor:
 
 
 def main():
-    """Interactive command-line interface for the extractor."""
+    """Command-line interface for the extractor."""
+    parser = argparse.ArgumentParser(
+        description='Extract child IDs and names from ChildPaths HTML files',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Process a single HTML file
+  python child_info_extractor.py -f path/to/file.html -o output.csv
+  
+  # Process all HTML files in a directory
+  python child_info_extractor.py -d path/to/directory -o output.xlsx
+  
+  # Interactive mode
+  python child_info_extractor.py -i
+  
+  # Process specific files with debug info
+  python child_info_extractor.py -f file1.html file2.html -v
+  """
+    )
+    
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('-f', '--files', nargs='+', help='HTML file(s) to process')
+    input_group.add_argument('-d', '--directory', help='Directory containing HTML files to process')
+    input_group.add_argument('-i', '--interactive', action='store_true', help='Run in interactive mode')
+    
+    parser.add_argument('-o', '--output', help='Output file path (CSV or Excel)')
+    parser.add_argument('-e', '--extension', default='.html', help='File extension when processing directory (default: .html)')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose debug output')
+    parser.add_argument('--format', choices=['csv', 'excel'], default='csv', help='Output format (default: csv)')
+    
+    args = parser.parse_args()
+    
+    extractor = ChildInfoExtractor(debug=args.verbose)
+    
+    # Display header
     print("\n" + "="*60)
     print("  ChildPaths Information Extractor")
-    print("  Author: wolketich | Last Updated: 2025-04-29")
-    print("="*60 + "\n")
+    print(f"  User: {os.getlogin() or 'Unknown'} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*60)
     
-    print("This tool extracts child IDs and names from ChildPaths HTML snippets.")
-    print("You can paste HTML content multiple times and export the results.")
-    print("\nNote: For Excel export, you need pandas and openpyxl installed.")
-    print("      Install with: pip install pandas openpyxl\n")
+    if args.interactive:
+        run_interactive_mode(extractor)
+        return
     
-    extractor = ChildInfoExtractor(debug=True)
+    # Process input sources
+    if args.files:
+        for file_path in args.files:
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
+                continue
+                
+            print(f"\nProcessing file: {file_path}")
+            children = extractor.process_file(file_path)
+            print(f"Extracted {len(children)} children from this file")
+    
+    elif args.directory:
+        if not os.path.isdir(args.directory):
+            logger.error(f"Directory not found: {args.directory}")
+            return
+            
+        print(f"\nProcessing all {args.extension} files in: {args.directory}")
+        children = extractor.process_directory(args.directory, args.extension)
+        print(f"Extracted {len(children)} children from all files")
+    
+    # Output results
+    if not extractor.all_children:
+        print("\nNo children were extracted. Please check your input files.")
+        return
+    
+    # Determine output filename
+    output_filename = args.output
+    if not output_filename:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        extension = '.xlsx' if args.format == 'excel' else '.csv'
+        output_filename = f"child_data_{timestamp}{extension}"
+    
+    # Export based on format
+    if args.format == 'excel' or output_filename.endswith(('.xlsx', '.xls')):
+        filepath = extractor.export_to_excel(output_filename)
+    else:
+        filepath = extractor.export_to_csv(output_filename)
+    
+    if filepath:
+        print(f"\nSuccessfully exported {len(extractor.all_children)} children to: {filepath}")
+    else:
+        print("\nFailed to export data. Check log for details.")
+
+
+def run_interactive_mode(extractor):
+    """Run the interactive command-line interface."""
+    print("\nInteractive Mode")
+    print("This tool extracts child IDs and names from ChildPaths HTML files.")
     
     while True:
         print("\n" + "-"*60)
-        print("Paste the HTML content below (type 'DONE' on a new line when finished):")
+        print("Menu:")
+        print("1. Process an HTML file")
+        print("2. Process a directory of HTML files")
+        print("3. Export current data")
+        print("4. View summary of extracted data")
+        print("5. Quit")
         print("-"*60)
         
-        # Collect multiline input until user types DONE
-        html_lines = []
-        while True:
-            line = input()
-            if line.strip().upper() == 'DONE':
-                break
-            html_lines.append(line)
+        choice = input("\nEnter your choice (1-5): ").strip()
         
-        html_content = "\n".join(html_lines)
-        
-        if not html_content.strip():
-            print("\nNo HTML content provided.")
-        else:
-            print("\nProcessing HTML content...")
-            children = extractor.extract(html_content)
-            
-            if children:
-                print(f"\nExtracted {len(children)} children:")
-                for idx, child in enumerate(children):
-                    print(f"  {idx+1}. {child['name']} (ID: {child['id']})")
-            else:
-                print("\nNo children found in the provided HTML.")
-                print("Please check that the HTML contains the expected structure.")
-        
-        print(f"\nTotal children collected so far: {len(extractor.all_children)}")
-        
-        # Ask if the user wants to add more HTML, export, or quit
-        action = input("\nWhat would you like to do next? (add/export/quit): ").strip().lower()
-        
-        if action == 'add':
-            continue
-        elif action == 'export':
-            if not extractor.all_children:
-                print("No children to export. Please add some HTML content first.")
+        if choice == '1':
+            file_path = input("Enter the path to the HTML file: ").strip()
+            if not os.path.exists(file_path):
+                print(f"Error: File not found: {file_path}")
                 continue
+                
+            print(f"\nProcessing file: {file_path}")
+            children = extractor.process_file(file_path)
+            print(f"Extracted {len(children)} children from this file")
             
+        elif choice == '2':
+            dir_path = input("Enter the directory path: ").strip()
+            if not os.path.isdir(dir_path):
+                print(f"Error: Directory not found: {dir_path}")
+                continue
+                
+            extension = input("Enter file extension to process (default: .html): ").strip() or '.html'
+            print(f"\nProcessing all {extension} files in: {dir_path}")
+            children = extractor.process_directory(dir_path, extension)
+            print(f"Extracted {len(children)} children from all files")
+            
+        elif choice == '3':
+            if not extractor.all_children:
+                print("No children to export. Please process some files first.")
+                continue
+                
             export_format = input("Export as CSV or Excel? (csv/excel): ").strip().lower()
             
             if export_format == 'csv':
@@ -286,16 +412,36 @@ def main():
             else:
                 print("Invalid format. Please choose 'csv' or 'excel'.")
             
-            # Ask if they want to continue or quit after exporting
-            continue_action = input("\nContinue extracting more data? (yes/no): ").strip().lower()
-            if continue_action != 'yes':
-                break
-        
-        elif action == 'quit':
+        elif choice == '4':
+            if not extractor.all_children:
+                print("No children have been extracted yet.")
+                continue
+                
+            print(f"\nExtracted {len(extractor.all_children)} children in total:")
+            
+            # Group by source
+            sources = {}
+            for child in extractor.all_children:
+                source = child.get('source', 'unknown')
+                sources[source] = sources.get(source, 0) + 1
+                
+            print("\nBreakdown by source:")
+            for source, count in sources.items():
+                print(f"  {source}: {count} children")
+                
+            # Show sample of data
+            print("\nSample data (first 5 entries):")
+            for i, child in enumerate(extractor.all_children[:5]):
+                print(f"  {i+1}. {child['name']} (ID: {child['id']})")
+                
+            if len(extractor.all_children) > 5:
+                print(f"  ... and {len(extractor.all_children)-5} more")
+            
+        elif choice == '5':
             # Ask if they want to save before quitting if they have data
             if extractor.all_children:
                 save_action = input("Save data before quitting? (yes/no): ").strip().lower()
-                if save_action == 'yes':
+                if save_action in ('yes', 'y'):
                     export_format = input("Export as CSV or Excel? (csv/excel): ").strip().lower()
                     
                     if export_format == 'csv':
@@ -320,7 +466,8 @@ def main():
             break
         
         else:
-            print("Invalid choice. Please enter 'add', 'export', or 'quit'.")
+            print("Invalid choice. Please enter a number between 1 and 5.")
+
 
 if __name__ == "__main__":
     main()
